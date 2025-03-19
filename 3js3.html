@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js - Animated Model with Camera Transitions</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <p>Press <b>'S'</b> to toggle Split-Screen mode.</p>
+    </div>
+
+    <!-- Include Three.js, GLTFLoader, and GSAP -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+
+    <script>
+        const MODEL_URL = 'images/running_model/runner.gltf'; // Correct model path
+
+        // Scene, Renderer, and Camera setup
+        const scene = new THREE.Scene();
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting setup
+        const ambientLight = new THREE.AmbientLight("yellow", 1);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight("red", 2);
+        directionalLight.position.set(5, 5, 5);
+        scene.add(directionalLight);
+
+        const aspectRatio = window.innerWidth / window.innerHeight;
+        const cameras = [
+            new THREE.PerspectiveCamera(75, aspectRatio, 0.1, 1000),
+            new THREE.PerspectiveCamera(75, aspectRatio, 0.1, 1000),
+            new THREE.PerspectiveCamera(20, aspectRatio, 1, 1000),
+            new THREE.PerspectiveCamera(75, aspectRatio, 0.1, 1000)
+        ];
+
+        cameras[0].position.set(0, 1.5, 4);
+        cameras[1].position.set(-4, 1.5, 0);
+        cameras[2].position.set(-5, 6, 4);
+        cameras[3].position.set(-3, 1.5, -2);
+
+        const arrayCamera = new THREE.ArrayCamera(cameras);
+        
+        // Assign viewports for split-screen
+        cameras[0].viewport = new THREE.Vector4(0, window.innerHeight / 2, window.innerWidth / 2, window.innerHeight / 2);
+        cameras[1].viewport = new THREE.Vector4(window.innerWidth / 2, window.innerHeight / 2, window.innerWidth / 2, window.innerHeight / 2);
+        cameras[2].viewport = new THREE.Vector4(0, 0, window.innerWidth / 2, window.innerHeight / 2);
+        cameras[3].viewport = new THREE.Vector4(window.innerWidth / 2, 0, window.innerWidth / 2, window.innerHeight / 2);
+
+        // Create a "virtual" camera that will be our active camera
+        const virtualCamera = new THREE.PerspectiveCamera(75, aspectRatio, 0.1, 1000);
+        virtualCamera.position.copy(cameras[0].position);
+        virtualCamera.rotation.copy(cameras[0].rotation);
+        
+        let activeCamera = virtualCamera; 
+        let currentCameraIndex = 0;
+        let isSplitScreen = false;
+        let isTransitioning = false;
+
+        // Animation & Model Variables
+        let mixer;
+        let clock = new THREE.Clock();
+        let model;
+
+        // Load the GLTF model
+        const loader = new THREE.GLTFLoader();
+        loader.load(MODEL_URL, function (gltf) {
+            model = gltf.scene;
+            scene.add(model);
+
+            // Setup animations
+            if (gltf.animations.length > 0) {
+                mixer = new THREE.AnimationMixer(model);
+                const action = mixer.clipAction(gltf.animations[0]); 
+                action.play();
+            }
+
+            // Apply green shirt color if material is named "peopleColors"
+            model.traverse((child) => {
+                if (child.isMesh && child.material) {
+                    if (child.material.name && child.material.name.includes("peopleColors")) {
+                        child.material.color.set(0x228B22); // Green shirt
+                        child.material.needsUpdate = true;
+                    }
+                }
+            });
+
+            // Make all cameras look at the model
+            cameras.forEach(cam => cam.lookAt(model.position));
+            virtualCamera.lookAt(model.position);
+            
+            // Start the transition loop
+            setTimeout(transitionToNextCamera, 1500);
+
+        }, undefined, function (error) {
+            console.error('Error loading the model:', error);
+        });
+
+        // Smooth camera transition function
+        function transitionToNextCamera() {
+            if (isTransitioning || isSplitScreen) {
+                setTimeout(transitionToNextCamera, 1500);
+                return;
+            }
+            
+            isTransitioning = true;
+            const nextCameraIndex = (currentCameraIndex + 1) % cameras.length;
+            const targetCamera = cameras[nextCameraIndex];
+            
+            // Store target position and rotation
+            const targetPosition = targetCamera.position.clone();
+            const targetQuaternion = targetCamera.quaternion.clone();
+            
+            // Animate position
+            gsap.to(virtualCamera.position, {
+                x: targetPosition.x,
+                y: targetPosition.y,
+                z: targetPosition.z,
+                duration: 1.5,
+                ease: "steps(2)"
+            });
+            
+            // Animate rotation using quaternion slerp
+            const startQuaternion = virtualCamera.quaternion.clone();
+            gsap.to({t: 0}, {
+                t: 1,
+                duration: 1.5,
+                ease: "power4.inOut",
+                onUpdate: function() {
+                    THREE.Quaternion.slerp(
+                        startQuaternion,
+                        targetQuaternion,
+                        virtualCamera.quaternion,
+                        this.progress()
+                    );
+                },
+                onComplete: function() {
+                    currentCameraIndex = nextCameraIndex;
+                    isTransitioning = false;
+                    
+                    setTimeout(transitionToNextCamera, 500);
+                }
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (mixer) mixer.update(clock.getDelta());
+            
+            if (isSplitScreen) {
+                renderer.clear();
+                renderer.setScissorTest(true);
+                cameras.forEach(cam => {
+                    renderer.setViewport(cam.viewport.x, cam.viewport.y, cam.viewport.z, cam.viewport.w);
+                    renderer.setScissor(cam.viewport.x, cam.viewport.y, cam.viewport.z, cam.viewport.w);
+                    renderer.render(scene, cam);
+                });
+                renderer.setScissorTest(false);
+            } else {
+                renderer.render(scene, activeCamera);
+            }
+        }
+        animate();
+
+        window.addEventListener('keydown', (event) => {
+            if (event.key.toLowerCase() === 's') {
+                isSplitScreen = !isSplitScreen;
+            }
+        });
+
+        // Window Resize Handling
+        window.addEventListener('resize', () => {
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+            renderer.setSize(width, height);
+            
+            const aspectRatio = width / height;
+            cameras.forEach(camera => {
+                camera.aspect = aspectRatio;
+                camera.updateProjectionMatrix();
+            });
+            
+            virtualCamera.aspect = aspectRatio;
+            virtualCamera.updateProjectionMatrix();
+        });
+    </script>
+</body>
+</html>
